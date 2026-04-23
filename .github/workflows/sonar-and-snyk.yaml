@@ -92,7 +92,7 @@ jobs:
 
       - name: Install Node dependencies
         if: inputs.runtime == 'node'
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Install Python dependencies
         if: inputs.runtime == 'python'
