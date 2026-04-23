@@ -68,7 +68,7 @@ jobs:
           git config user.name  "github-actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add "$FILE"
+          git add "${{ env.FILE }}"
           git diff --cached --quiet && echo "No changes — tag already up to date" && exit 0
 
           git commit -m "chore(${{ inputs.service_name }}): update image tag to ${{ inputs.image_tag }}"
