@@ -42,27 +42,73 @@ jobs:
 
       - name: Update image tag
         run: |
-          if [ "${{ inputs.target_branch }}" == "main" ]; then
-            FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
-          else
-            FILE="charts/${{ inputs.service_name }}/values.dev.yaml"
-          fi
-          
+          FILE="${{ inputs.helm_values_path }}"
+
           if [ ! -f "$FILE" ]; then
-            echo "image:
-  tag: latest" >> "$FILE"
+            if [ "${{ inputs.target_branch }}" = "main" ]; then
+              FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
+            else
+              FILE="charts/${{ inputs.service_name }}/values.dev.yaml"
+            fi
           fi
 
           if [ ! -f "$FILE" ]; then
-            echo "ERROR: $FILE not found in ustbite-helm-charts repo"
+            echo "ERROR: values file not found: $FILE" 1>&2
             exit 1
           fi
 
           echo "Before:"
           grep "tag:" "$FILE" || true
 
-          # Target the specific indented `tag:` line under images.<service>
-          sed -i "s|^\(\s*tag:\s*\).*|\1${{ inputs.image_tag }}|" "$FILE"
+          # Update only the tag under the image block
+          IMAGE_TAG="${{ inputs.image_tag }}"
+          export IMAGE_TAG
+          python - <<'PY'
+          import os
+          import re
+
+          path = os.environ["FILE"]
+          tag = os.environ["IMAGE_TAG"]
+
+          with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+          out = []
+          in_image = False
+          image_indent = None
+          updated = False
+
+          for line in lines:
+            m = re.match(r"^(\s*)image\s*:\s*$", line)
+            if m:
+              image_indent = len(m.group(1))
+              in_image = True
+              out.append(line)
+              continue
+
+            if in_image:
+              if re.match(r"^\s*(#.*)?$", line):
+                out.append(line)
+                continue
+
+              indent = len(re.match(r"^(\s*)", line).group(1))
+              if indent <= image_indent:
+                in_image = False
+
+            if in_image and re.match(r"^\s*tag\s*:", line):
+              indent = re.match(r"^(\s*)", line).group(1)
+              out.append(f"{indent}tag: {tag}\n")
+              updated = True
+              continue
+
+            out.append(line)
+
+          if not updated:
+            raise SystemExit(f"ERROR: no image.tag found in {path}")
+
+          with open(path, "w", encoding="utf-8") as f:
+            f.writelines(out)
+          PY
 
           echo "After:"
           grep "tag:" "$FILE"
