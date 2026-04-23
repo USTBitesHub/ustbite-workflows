@@ -12,9 +12,10 @@ on:
         required: true
         type: string
       helm_values_path:
-        description: "Path to values file inside ustbite-helm-charts repo"
-        required: true
+        description: "Deprecated — kept for compatibility. File is derived from service_name + target_branch."
+        required: false
         type: string
+        default: ""
       target_branch:
         description: "Branch to check out and push the values update to (main or develop)"
         required: false
@@ -42,14 +43,12 @@ jobs:
 
       - name: Update image tag
         run: |
-          FILE="${{ inputs.helm_values_path }}"
-
-          if [ ! -f "$FILE" ]; then
-            if [ "${{ inputs.target_branch }}" = "main" ]; then
-              FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
-            else
-              FILE="charts/${{ inputs.service_name }}/values.dev.yaml"
-            fi
+          # Determine the correct values file based on target branch.
+          # helm_values_path is ignored — we always use env-specific files.
+          if [ "${{ inputs.target_branch }}" = "main" ]; then
+            FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
+          else
+            FILE="charts/${{ inputs.service_name }}/values.dev.yaml"
           fi
 
           if [ ! -f "$FILE" ]; then
@@ -60,54 +59,54 @@ jobs:
           echo "Before:"
           grep "tag:" "$FILE" || true
 
-          # Update only the tag under the image block
-          IMAGE_TAG="${{ inputs.image_tag }}"
-          export IMAGE_TAG
+          # Export both vars so the Python heredoc can see them
+          export FILE
+          export IMAGE_TAG="${{ inputs.image_tag }}"
+
           python - <<'PY'
           import os
           import re
 
           path = os.environ["FILE"]
-          tag = os.environ["IMAGE_TAG"]
+          tag  = os.environ["IMAGE_TAG"]
 
           with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+              lines = f.readlines()
 
           out = []
-          in_image = False
+          in_image    = False
           image_indent = None
-          updated = False
+          updated     = False
 
           for line in lines:
-            m = re.match(r"^(\s*)image\s*:\s*$", line)
-            if m:
-              image_indent = len(m.group(1))
-              in_image = True
+              m = re.match(r"^(\s*)image\s*:\s*$", line)
+              if m:
+                  image_indent = len(m.group(1))
+                  in_image = True
+                  out.append(line)
+                  continue
+
+              if in_image:
+                  if re.match(r"^\s*(#.*)?$", line):
+                      out.append(line)
+                      continue
+                  indent = len(re.match(r"^(\s*)", line).group(1))
+                  if indent <= image_indent:
+                      in_image = False
+
+              if in_image and re.match(r"^\s*tag\s*:", line):
+                  indent_str = re.match(r"^(\s*)", line).group(1)
+                  out.append(f"{indent_str}tag: {tag}\n")
+                  updated = True
+                  continue
+
               out.append(line)
-              continue
-
-            if in_image:
-              if re.match(r"^\s*(#.*)?$", line):
-                out.append(line)
-                continue
-
-              indent = len(re.match(r"^(\s*)", line).group(1))
-              if indent <= image_indent:
-                in_image = False
-
-            if in_image and re.match(r"^\s*tag\s*:", line):
-              indent = re.match(r"^(\s*)", line).group(1)
-              out.append(f"{indent}tag: {tag}\n")
-              updated = True
-              continue
-
-            out.append(line)
 
           if not updated:
-            raise SystemExit(f"ERROR: no image.tag found in {path}")
+              raise SystemExit(f"ERROR: no image.tag field found under image: block in {path}")
 
           with open(path, "w", encoding="utf-8") as f:
-            f.writelines(out)
+              f.writelines(out)
           PY
 
           echo "After:"
