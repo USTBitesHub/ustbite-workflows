@@ -1,0 +1,195 @@
+name: generate-tag-and-build-image
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+      service_path:
+        required: true
+        type: string
+      run_trivy:
+        description: "Run Trivy image scan (set false on push/merge since it ran in the PR)"
+        type: boolean
+        default: true
+    secrets:
+      DOCKERHUB_USERNAME:
+      DOCKERHUB_TOKEN:
+
+    outputs:
+      tag:
+        description: "Computed image tag"
+        value: ${{ jobs.generate-tag.outputs.tag }}
+      tag_exists:
+        description: "Whether git tag already exists"
+        value: ${{ jobs.generate-tag.outputs.tag_exists }}
+      image_exists:
+        description: "Whether Docker Hub image already exists"
+        value: ${{ jobs.generate-tag.outputs.image_exists }}
+      build_result:
+        description: "build-image job result"
+        value: ${{ jobs.build-image.outputs.result }}
+      trivy_result:
+        description: "trivy job result"
+        value: ${{ jobs.trivy.outputs.result }}
+
+
+jobs:
+  generate-tag:
+    name: generate tag
+    runs-on: ubuntu-latest
+    outputs:
+      tag:          ${{ steps.tag.outputs.tag }}
+      tag_exists:   ${{ steps.tag_check.outputs.exists }}
+      image_exists: ${{ steps.image_check.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate semantic version (main only)
+        id: semver
+        if: github.ref_name == 'main'
+        uses: mathieudutour/github-tag-action@v6.2
+        with:
+          github_token: ${{ github.token }}
+          tag_prefix: "${{ inputs.service_name }}-v"
+          dry_run: true
+          default_bump: patch
+
+      - name: Generate tag
+        id: tag
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            COMPUTED_TAG="${{ steps.semver.outputs.new_tag }}"
+            echo "Branch: main  |  semver new_tag: $COMPUTED_TAG"
+            echo "tag=$COMPUTED_TAG" >> $GITHUB_OUTPUT
+          else
+            BRANCH_SLUG=$(echo "${{ github.ref_name }}" | sed 's|/|-|g')
+            SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+            COMPUTED_TAG="${BRANCH_SLUG}-${SHORT_SHA}"
+            echo "Branch: ${{ github.ref_name }}  |  tag: $COMPUTED_TAG"
+            echo "tag=$COMPUTED_TAG" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate existing git tag
+        id: tag_check
+        run: |
+          TAG=${{ steps.tag.outputs.tag }}
+          git fetch --tags origin || true
+
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            TAG_COMMIT=$(git rev-list -n 1 "$TAG")
+            CURRENT_COMMIT=$(git rev-parse HEAD)
+
+            if [ "$TAG_COMMIT" != "$CURRENT_COMMIT" ]; then
+              echo "Tag $TAG already exists but points to a different commit — aborting."
+              exit 1
+            fi
+
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check if Docker image already exists
+        id: image_check
+        run: |
+          echo "Tag generated: ${{ steps.tag.outputs.tag }}"
+
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ] && [ -n "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            IMAGE="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ steps.tag.outputs.tag }}"
+            echo "Checking image: $IMAGE"
+
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            if docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+              echo "Image EXISTS in Docker Hub — skipping build"
+              echo "exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "Image NOT found in Docker Hub — will build and push"
+              echo "exists=false" >> $GITHUB_OUTPUT
+            fi
+
+            docker logout
+          else
+            echo "No Docker Hub credentials found — skipping image check"
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+
+  build-image:
+    name: build image
+    runs-on: ubuntu-latest
+    needs: [generate-tag]
+    if: |
+      always() &&
+      needs.generate-tag.result == 'success' &&
+      needs.generate-tag.outputs.image_exists != 'true'
+    outputs:
+      result: ${{ job.status }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract image tags
+        id: meta
+        run: |
+          echo "image_tag=${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ needs.generate-tag.outputs.tag }}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker image
+        run: |
+          docker build -t ${{ steps.meta.outputs.image_tag }} ${{ inputs.service_path }}
+
+      - name: Save Docker image to tar
+        run: docker save ${{ steps.meta.outputs.image_tag }} -o /tmp/image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ inputs.service_name }}
+          path: /tmp/image.tar
+          retention-days: 1
+
+
+
+
+  trivy:
+    name: trivy
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      inputs.run_trivy == true &&
+      needs.build-image.result == 'success'
+    needs: [generate-tag, build-image]
+    outputs:
+      result: ${{ steps.trivy.outcome }}
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image-${{ inputs.service_name }}
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load -i /tmp/image.tar
+
+      - name: Trivy scan
+        id: trivy
+        uses: aquasecurity/trivy-action@master
+        continue-on-error: true
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ needs.generate-tag.outputs.tag }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Fail if trivy found critical vulnerabilities
+        if: steps.trivy.outcome == 'failure'
+        run: |
+          echo "Trivy scan found critical vulnerabilities"
+          exit 1

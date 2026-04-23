@@ -1,0 +1,109 @@
+name: notify
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+      git_tag:
+        required: false
+        type: string
+        default: "N/A"
+      sonarqube_result:
+        type: string
+        default: "skipped"
+      snyk_result:
+        type: string
+        default: "skipped"
+      generate_tag_result:
+        type: string
+        default: "skipped"
+      build_result:
+        type: string
+        default: "skipped"
+      trivy_result:
+        type: string
+        default: "skipped"
+      push_result:
+        type: string
+        default: "skipped"
+    secrets:
+      SENDGRID_API_KEY:
+
+
+jobs:
+  notify:
+    name: notify
+    runs-on: ubuntu-latest
+    # Only run if at least one job actually failed
+    if: |
+      inputs.sonarqube_result    == 'failure' ||
+      inputs.snyk_result         == 'failure' ||
+      inputs.generate_tag_result == 'failure' ||
+      inputs.build_result        == 'failure' ||
+      inputs.trivy_result        == 'failure' ||
+      inputs.push_result         == 'failure'
+    steps:
+      - name: Build failure summary
+        id: summary
+        run: |
+          FAILED_JOBS=""
+
+          if [ "${{ inputs.sonarqube_result }}"    == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| sonarqube | FAILED |\n"
+          fi
+          if [ "${{ inputs.snyk_result }}"         == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| snyk | FAILED |\n"
+          fi
+          if [ "${{ inputs.generate_tag_result }}" == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| generate-tag | FAILED |\n"
+          fi
+          if [ "${{ inputs.build_result }}"        == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| build image | FAILED |\n"
+          fi
+          if [ "${{ inputs.trivy_result }}"        == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| trivy | FAILED — CRITICAL CVEs detected, push blocked |\n"
+          fi
+          if [ "${{ inputs.push_result }}"         == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| push | FAILED |\n"
+          fi
+
+          echo "failed_jobs<<EOF" >> $GITHUB_OUTPUT
+          printf "$FAILED_JOBS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Send failure notification
+        uses: licenseware/send-email-notification@v1
+        with:
+          api-key: ${{ secrets.SENDGRID_API_KEY }}
+          subject: "CI FAILED — ${{ inputs.service_name }} (${{ github.sha }})"
+          from-email: chrissattasseril16@gmail.com
+          to-email: chrissattasseril16@gmail.com
+          markdown-body: |
+            ## CI Pipeline Failed — ${{ inputs.service_name }}
+
+            | Detail | Value |
+            |--------|-------|
+            | **Service** | `${{ inputs.service_name }}` |
+            | **Branch** | `${{ github.ref_name }}` |
+            | **Tag** | `${{ inputs.git_tag }}` |
+            | **Actor** | ${{ github.actor }} |
+            | **Commit** | ${{ github.event.head_commit.message }} |
+            | **SHA** | `${{ github.sha }}` |
+
+            ## Failed Jobs
+            ${{ steps.summary.outputs.failed_jobs }}
+
+            ## All Job Results
+
+            | Job | Result |
+            |-----|--------|
+            | sonarqube | **${{ inputs.sonarqube_result }}** |
+            | snyk | **${{ inputs.snyk_result }}** |
+            | generate-tag | **${{ inputs.generate_tag_result }}** |
+            | build image | **${{ inputs.build_result }}** |
+            | trivy | **${{ inputs.trivy_result }}** |
+            | push | **${{ inputs.push_result }}** |
+
+            [View Full Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})

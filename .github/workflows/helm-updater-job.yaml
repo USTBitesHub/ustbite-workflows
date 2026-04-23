@@ -1,0 +1,80 @@
+name: helm-updater
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Name of the microservice"
+        required: true
+        type: string
+      image_tag:
+        description: "New image tag to write into values.yaml"
+        required: true
+        type: string
+      helm_values_path:
+        description: "Path to values file inside ustbite-helm-charts repo"
+        required: true
+        type: string
+      target_branch:
+        description: "Branch to check out and push the values update to (main or develop)"
+        required: false
+        type: string
+        default: main
+    secrets:
+      HELM_CHARTS_TOKEN:
+        description: "PAT with contents:write on ustbite-helm-charts repo"
+        required: true
+
+
+jobs:
+
+  update-helm-values:
+    name: update helm values
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout ustbite-helm-charts
+        uses: actions/checkout@v4
+        with:
+          repository: USTBitesHub/ustbite-helm-charts
+          token: ${{ secrets.HELM_CHARTS_TOKEN }}
+          ref: ${{ inputs.target_branch }}
+
+      - name: Update image tag
+        run: |
+          if [ "${{ inputs.target_branch }}" == "main" ]; then
+            FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
+          else
+            FILE="charts/${{ inputs.service_name }}/values.dev.yaml"
+          fi
+          
+          if [ ! -f "$FILE" ]; then
+            echo "image:
+  tag: latest" >> "$FILE"
+          fi
+
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: $FILE not found in ustbite-helm-charts repo"
+            exit 1
+          fi
+
+          echo "Before:"
+          grep "tag:" "$FILE" || true
+
+          # Target the specific indented `tag:` line under images.<service>
+          sed -i "s|^\(\s*tag:\s*\).*|\1${{ inputs.image_tag }}|" "$FILE"
+
+          echo "After:"
+          grep "tag:" "$FILE"
+          echo "FILE=$FILE" >> $GITHUB_ENV
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "$FILE"
+          git diff --cached --quiet && echo "No changes — tag already up to date" && exit 0
+
+          git commit -m "chore(${{ inputs.service_name }}): update image tag to ${{ inputs.image_tag }}"
+          git push origin ${{ inputs.target_branch }}
