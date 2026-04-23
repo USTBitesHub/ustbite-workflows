@@ -43,8 +43,6 @@ jobs:
 
       - name: Update image tag
         run: |
-          # Determine the correct values file based on target branch.
-          # helm_values_path is ignored — we always use env-specific files.
           if [ "${{ inputs.target_branch }}" = "main" ]; then
             FILE="charts/${{ inputs.service_name }}/values.prod.yaml"
           else
@@ -52,62 +50,14 @@ jobs:
           fi
 
           if [ ! -f "$FILE" ]; then
-            echo "ERROR: values file not found: $FILE" 1>&2
+            echo "ERROR: $FILE not found in ustbite-helm-charts (${{ inputs.target_branch }} branch)"
             exit 1
           fi
 
           echo "Before:"
           grep "tag:" "$FILE" || true
 
-          # Export both vars so the Python heredoc can see them
-          export FILE
-          export IMAGE_TAG="${{ inputs.image_tag }}"
-
-          python - <<'PY'
-          import os
-          import re
-
-          path = os.environ["FILE"]
-          tag  = os.environ["IMAGE_TAG"]
-
-          with open(path, "r", encoding="utf-8") as f:
-              lines = f.readlines()
-
-          out = []
-          in_image    = False
-          image_indent = None
-          updated     = False
-
-          for line in lines:
-              m = re.match(r"^(\s*)image\s*:\s*$", line)
-              if m:
-                  image_indent = len(m.group(1))
-                  in_image = True
-                  out.append(line)
-                  continue
-
-              if in_image:
-                  if re.match(r"^\s*(#.*)?$", line):
-                      out.append(line)
-                      continue
-                  indent = len(re.match(r"^(\s*)", line).group(1))
-                  if indent <= image_indent:
-                      in_image = False
-
-              if in_image and re.match(r"^\s*tag\s*:", line):
-                  indent_str = re.match(r"^(\s*)", line).group(1)
-                  out.append(f"{indent_str}tag: {tag}\n")
-                  updated = True
-                  continue
-
-              out.append(line)
-
-          if not updated:
-              raise SystemExit(f"ERROR: no image.tag field found under image: block in {path}")
-
-          with open(path, "w", encoding="utf-8") as f:
-              f.writelines(out)
-          PY
+          sed -i "s|^\(\s*tag:\s*\).*|\1${{ inputs.image_tag }}|" "$FILE"
 
           echo "After:"
           grep "tag:" "$FILE"
