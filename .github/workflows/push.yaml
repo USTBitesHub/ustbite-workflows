@@ -31,6 +31,10 @@ jobs:
   push:
     name: push
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write   
     outputs:
       result: ${{ job.status }}
       tag:    ${{ inputs.git_tag }}
@@ -47,15 +51,32 @@ jobs:
       - name: Load Docker image
         run: docker load -i /tmp/image.tar
 
-      - name: Login to Docker Hub
+      - name: Login to Docker Hub (main only)
+        if: github.ref_name == 'main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to GHCR (develop only)
+        if: github.ref_name != 'main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image name
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_NAME=ghcr.io/ustbiteshub/ustbite-${{ inputs.service_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Tag and push versioned image
         run: |
-          IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
+          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
           LOADED_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -n1)
           docker tag "$LOADED_IMAGE" "$IMAGE_TAG"
           docker push "$IMAGE_TAG"
@@ -63,8 +84,8 @@ jobs:
       - name: Tag and push latest (main only)
         if: github.ref_name == 'main'
         run: |
-          IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
-          IMAGE_LATEST="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:latest"
+          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
+          IMAGE_LATEST="${{ env.IMAGE_NAME }}:latest"
           docker tag $IMAGE_TAG $IMAGE_LATEST
           docker push $IMAGE_LATEST
 
@@ -75,3 +96,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag ${{ inputs.git_tag }}
           git push origin ${{ inputs.git_tag }}
+      
+      
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign (main only)
+        if: github.ref_name == 'main'
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
+          cosign sign --yes "$IMAGE"
+        env:
+          COSIGN_EXPERIMENTAL: "1"
