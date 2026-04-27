@@ -10,6 +10,9 @@ on:
       result:
         description: "gitleaks job result"
         value: ${{ jobs.gitleaks.outputs.result }}
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
 
 jobs:
   gitleaks:
