@@ -1,3 +1,82 @@
+# name: push
+
+# on:
+#   workflow_call:
+#     inputs:
+#       service_name:
+#         required: true
+#         type: string
+#       git_tag:
+#         required: true
+#         type: string
+#       tag_exists:
+#         required: true
+#         type: string
+#     secrets:
+#       DOCKERHUB_USERNAME:
+#         required: true
+#       DOCKERHUB_TOKEN:
+#         required: true
+
+#     outputs:
+#       push_result:
+#         description: "push job result"
+#         value: ${{ jobs.push.outputs.result }}
+#       tag:
+#         description: "The image tag that was pushed"
+#         value: ${{ jobs.push.outputs.tag }}
+
+
+# jobs:
+#   push:
+#     name: push
+#     runs-on: ubuntu-latest
+#     outputs:
+#       result: ${{ job.status }}
+#       tag:    ${{ inputs.git_tag }}
+#     steps:
+#       - uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - uses: actions/download-artifact@v4
+#         with:
+#           name: docker-image-${{ inputs.service_name }}
+#           path: /tmp
+
+#       - name: Load Docker image
+#         run: docker load -i /tmp/image.tar
+
+#       - name: Login to Docker Hub
+#         uses: docker/login-action@v3
+#         with:
+#           username: ${{ secrets.DOCKERHUB_USERNAME }}
+#           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+#       - name: Tag and push versioned image
+#         run: |
+#           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
+#           LOADED_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -n1)
+#           docker tag "$LOADED_IMAGE" "$IMAGE_TAG"
+#           docker push "$IMAGE_TAG"
+
+#       - name: Tag and push latest (main only)
+#         if: github.ref_name == 'main'
+#         run: |
+#           IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
+#           IMAGE_LATEST="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:latest"
+#           docker tag $IMAGE_TAG $IMAGE_LATEST
+#           docker push $IMAGE_LATEST
+
+#       - name: Create and push git tag (main only, if not exists)
+#         if: github.ref_name == 'main' && inputs.tag_exists != 'true'
+#         run: |
+#           git config user.name "github-actions"
+#           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+#           git tag ${{ inputs.git_tag }}
+#           git push origin ${{ inputs.git_tag }}
+
+
 name: push
 
 on:
@@ -31,6 +110,8 @@ jobs:
   push:
     name: push
     runs-on: ubuntu-latest
+    permissions:
+      packages: write
     outputs:
       result: ${{ job.status }}
       tag:    ${{ inputs.git_tag }}
@@ -47,15 +128,32 @@ jobs:
       - name: Load Docker image
         run: docker load -i /tmp/image.tar
 
-      - name: Login to Docker Hub
+      - name: Login to Docker Hub (main only)
+        if: github.ref_name == 'main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Login to GHCR (develop only)
+        if: github.ref_name != 'main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image name
+        run: |
+          if [ "${{ github.ref_name }}" = "main" ]; then
+            echo "IMAGE_NAME=${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_NAME=ghcr.io/ustbiteshub/ustbite-${{ inputs.service_name }}" >> $GITHUB_ENV
+          fi
+
       - name: Tag and push versioned image
         run: |
-          IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
+          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
           LOADED_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | head -n1)
           docker tag "$LOADED_IMAGE" "$IMAGE_TAG"
           docker push "$IMAGE_TAG"
@@ -63,8 +161,8 @@ jobs:
       - name: Tag and push latest (main only)
         if: github.ref_name == 'main'
         run: |
-          IMAGE_TAG="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:${{ inputs.git_tag }}"
-          IMAGE_LATEST="${{ secrets.DOCKERHUB_USERNAME }}/ustbite-${{ inputs.service_name }}:latest"
+          IMAGE_TAG="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
+          IMAGE_LATEST="${{ env.IMAGE_NAME }}:latest"
           docker tag $IMAGE_TAG $IMAGE_LATEST
           docker push $IMAGE_LATEST
 
@@ -75,3 +173,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag ${{ inputs.git_tag }}
           git push origin ${{ inputs.git_tag }}
+
+
+
+
+
+
