@@ -28,6 +28,15 @@ on:
       push_result:
         type: string
         default: "skipped"
+      gitleaks_result:
+        type: string
+        default: "skipped"
+      hadolint_result:
+        type: string
+        default: "skipped"
+      checkov_result:
+        type: string
+        default: "skipped"
     secrets:
       SENDGRID_API_KEY:
 
@@ -43,7 +52,10 @@ jobs:
       inputs.generate_tag_result == 'failure' ||
       inputs.build_result        == 'failure' ||
       inputs.trivy_result        == 'failure' ||
-      inputs.push_result         == 'failure'
+      inputs.push_result         == 'failure' ||
+      inputs.gitleaks_result     == 'failure' ||
+      inputs.hadolint_result     == 'failure' ||
+      inputs.checkov_result      == 'failure'
     steps:
       - name: Build failure summary
         id: summary
@@ -67,6 +79,15 @@ jobs:
           fi
           if [ "${{ inputs.push_result }}"         == "failure" ]; then
             FAILED_JOBS="${FAILED_JOBS}| push | FAILED |\n"
+          fi
+          if [ "${{ inputs.gitleaks_result }}"     == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| gitleaks | FAILED — secrets detected in code |\n"
+          fi
+          if [ "${{ inputs.hadolint_result }}"     == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| hadolint | FAILED — Dockerfile issues found |\n"
+          fi
+          if [ "${{ inputs.checkov_result }}"      == "failure" ]; then
+            FAILED_JOBS="${FAILED_JOBS}| checkov | FAILED — IaC misconfigurations found |\n"
           fi
 
           echo "failed_jobs<<EOF" >> $GITHUB_OUTPUT
@@ -105,5 +126,8 @@ jobs:
             | build image | **${{ inputs.build_result }}** |
             | trivy | **${{ inputs.trivy_result }}** |
             | push | **${{ inputs.push_result }}** |
+            | gitleaks | **${{ inputs.gitleaks_result }}** |
+            | hadolint | **${{ inputs.hadolint_result }}** |
+            | checkov | **${{ inputs.checkov_result }}** |
 
             [View Full Logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})

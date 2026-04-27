@@ -1,0 +1,28 @@
+name: gitleaks
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+    outputs:
+      result:
+        description: "gitleaks job result"
+        value: ${{ jobs.gitleaks.outputs.result }}
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ job.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
