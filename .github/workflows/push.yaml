@@ -112,6 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       packages: write
+      contents: write
     outputs:
       result: ${{ job.status }}
       tag:    ${{ inputs.git_tag }}
