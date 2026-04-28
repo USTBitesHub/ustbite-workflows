@@ -113,6 +113,7 @@ jobs:
     permissions:
       packages: write
       contents: write
+      id-token: write
     outputs:
       result: ${{ job.status }}
       tag:    ${{ inputs.git_tag }}
@@ -177,6 +178,15 @@ jobs:
 
 
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
 
+      - name: Sign image with Cosign (main only)
+        if: github.ref_name == 'main'
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}:${{ inputs.git_tag }}"
+          cosign sign --yes "$IMAGE"
+        env:
+          COSIGN_EXPERIMENTAL: "1"
 
 
